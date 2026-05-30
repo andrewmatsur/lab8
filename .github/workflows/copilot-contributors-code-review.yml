@@ -1,0 +1,126 @@
+name: Copilot Contributors Code Review
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  review-contributors:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate contributor reviews and create issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t contributors < <(gh api "/repos/${REPO}/contributors?per_page=100" --jq '.[].login')
+
+          if [ "${#contributors[@]}" -eq 0 ]; then
+            echo "No contributors found."
+            exit 0
+          fi
+
+          for login in "${contributors[@]}"; do
+            title="Code review: @${login}"
+
+            open_count="$(gh issue list \
+              --repo "${REPO}" \
+              --search "in:title \"${title}\" state:open" \
+              --json number \
+              --jq 'length')"
+
+            if [ "${open_count}" -gt 0 ]; then
+              echo "Open issue already exists for ${login}, skipping."
+              continue
+            fi
+
+            commits_json="$(gh api "/repos/${REPO}/commits?author=${login}&per_page=20")"
+            commit_count="$(jq 'length' <<<"${commits_json}")"
+
+            if [ "${commit_count}" -eq 0 ]; then
+              echo "No commits found for ${login}, skipping."
+              continue
+            fi
+
+            total_additions=0
+            total_deletions=0
+            touched_files=()
+            recent_messages=()
+
+            while IFS=$'\t' read -r sha message; do
+              commit_data="$(gh api "/repos/${REPO}/commits/${sha}")"
+              additions="$(jq '.stats.additions // 0' <<<"${commit_data}")"
+              deletions="$(jq '.stats.deletions // 0' <<<"${commit_data}")"
+              total_additions=$((total_additions + additions))
+              total_deletions=$((total_deletions + deletions))
+
+              while IFS= read -r file_name; do
+                touched_files+=("${file_name}")
+              done < <(jq -r '.files[].filename' <<<"${commit_data}")
+
+              if [ "${#recent_messages[@]}" -lt 5 ]; then
+                recent_messages+=("- ${message}")
+              fi
+            done < <(jq -r '.[] | "\(.sha)\t\(.commit.message | split("\n")[0])"' <<<"${commits_json}")
+
+            unique_files_count="$(printf '%s\n' "${touched_files[@]}" | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
+            net_change=$((total_additions - total_deletions))
+
+            if [ "${net_change}" -ge 0 ]; then
+              net_label="+${net_change}"
+            else
+              net_label="${net_change}"
+            fi
+
+            if [ "${commit_count}" -ge 10 ]; then
+              consistency="висока регулярність внесків"
+            elif [ "${commit_count}" -ge 5 ]; then
+              consistency="стабільна участь у змінах"
+            else
+              consistency="точкові, але корисні зміни"
+            fi
+
+            if [ "${unique_files_count}" -ge 8 ]; then
+              coverage="широке покриття різних частин проєкту"
+            elif [ "${unique_files_count}" -ge 4 ]; then
+              coverage="робота в кількох важливих частинах проєкту"
+            else
+              coverage="сфокусована робота у визначеній області"
+            fi
+
+            {
+              echo "## Контриб'ютор"
+              echo "@${login}"
+              echo
+              echo "## Оцінка роботи"
+              echo "- Комітів (останні 20): ${commit_count}"
+              echo "- Додано рядків: ${total_additions}"
+              echo "- Видалено рядків: ${total_deletions}"
+              echo "- Чистий баланс: ${net_label}"
+              echo "- Унікальних файлів: ${unique_files_count}"
+              echo
+              echo "## Рев'ю"
+              echo "- Сильна сторона: ${consistency}."
+              echo "- Друга сильна сторона: ${coverage}."
+              echo "- Рекомендація: підтримувати змістовні повідомлення комітів і дробити великі зміни на менші логічні частини."
+              echo
+              echo "## Останні повідомлення комітів"
+              printf '%s\n' "${recent_messages[@]}"
+            } > issue_body.md
+
+            gh issue create \
+              --repo "${REPO}" \
+              --title "${title}" \
+              --body-file issue_body.md \
+              --assignee "${login}"
+          done
