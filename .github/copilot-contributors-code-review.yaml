@@ -1,10 +1,11 @@
 name: "Copilot Contributors Code Review"
+on: workflow_dispatch
 
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-on:
-  workflow_dispatch: 
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   review-code:
