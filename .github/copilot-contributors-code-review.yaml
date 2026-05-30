@@ -1,0 +1,14 @@
+name: "Copilot Contributors Code Review"
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+on:
+  workflow_dispatch: 
+
+jobs:
+  review-code:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
